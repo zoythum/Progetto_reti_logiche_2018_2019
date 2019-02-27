@@ -1,6 +1,7 @@
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.STD_LOGIC_ARITH;
+use IEEE.numeric_std.all;
 
 -- Uncomment the following library declaration if using
 -- arithmetic functions with Signed or Unsigned values
@@ -29,14 +30,18 @@ end code;
 architecture Behavioral of code is
     --- variabili
     type eg_state_type is
-        (START, RAM_READ, RAM_ACK, DIST_CALC, DIST_LOWER, DIST_EQUAL, DIST_HIGHER, COMPLETED);
+        (START, MASK_ASK, POS_X_ASK, POS_Y_ASK, POS_Y_ACK, CEN_X_ASK, CEN_Y_ASK, CEN_Y_ACK, DIST_CALC, DIST_EVALUATE, COMPLETED);
+        
         -- START: inizio, stato di reset
-        -- RAM_READ: chiede alla ram
-        -- RAM_ACK: legge la risposta della ram
+        -- MASK_ASK: chiede la maschera alla ram (indirizzo 0)
+        -- POS_X_ASK: riceve la maschera dalla ram; chiede la posizione x alla ram (indirizzo 17)
+        -- POS_Y_ASK: riceve la posx dalla ram; chiede la posizione y alla ram (indirizzo 18)
+        -- POS_Y_ACK: riceve la posy dalla ram
+        -- CEN_X_ASK: chiede la X di un centroide alla ram
+        -- CEN_Y_ASK: riceve la X di un centroide dalla ram; chiede la Y di un centroide alla ram
+        -- CEN_Y_ACK: riceve la Y di un centroide dalla ram
         -- DIST_CALC: calcola la distanza tra il punto e il centroide attuale
-        -- DIST_LOWER: ha trovato un centroide con distanza minore della minima attuale
-        -- DIST_EQUAL: ha trovato un centroide con distanza uguale della attuale attuale
-        -- DIST_HIGHER: ha trovato un centroide con distanza maggiore della minima attuale
+        -- DIST_EVALUATE: confronta la distanza con quella minima salvata
         -- COMPLETED: computazione completata
         
     signal state_cur: eg_state_type;
@@ -44,11 +49,13 @@ architecture Behavioral of code is
     signal current_y: std_logic_vector(7 downto 0);         -- coordinata y del centroide attualmente considerato
     signal pos_x: std_logic_vector(7 downto 0);             -- coordinata x della posizione di partenza
     signal pos_y: std_logic_vector(7 downto 0);             -- coordinata y della posizione di partenza
-    signal min_distance: std_logic_vector(9 downto 0);      -- l'attuale distanza minima trovata
+    signal min_distance: std_logic_vector(8 downto 0);      -- l'attuale distanza minima trovata
+    signal current_distance: std_logic_vector(8 downto 0);  -- la distanza del centroide attuale dal punto
     signal mask: std_logic_vector(7 downto 0);              -- maschera richiesta
+    signal config_cursor: std_logic_vector(7 downto 0);     -- l'indirizzo da leggere dalla ram
     
-    signal centroid_cursor: std_logic_vector(7 downto 0);   -- l'indice dell'attuale centroide
-    signal config_cursor: std_logic_vector(4 downto 0);     -- l'attuale centroide
+    signal current_mask: std_logic_vector(7 downto 0);      -- la maschera del centroide attuale
+    signal output_mask: std_logic_vector(7 downto 0);       -- output
     
     -- -- -- -- -- -- -- --
     
@@ -57,11 +64,13 @@ architecture Behavioral of code is
     signal current_y_next: std_logic_vector(7 downto 0);         
     signal pos_x_next: std_logic_vector(7 downto 0);             
     signal pos_y_next: std_logic_vector(7 downto 0);             
-    signal min_distance_next: std_logic_vector(9 downto 0);
-    signal mask_next: std_logic_vector(7 downto 0);   
+    signal min_distance_next: std_logic_vector(8 downto 0);
+    signal current_distance_next: std_logic_vector(8 downto 0);
+    signal mask_next: std_logic_vector(7 downto 0);
+    signal config_cursor_next: std_logic_vector(7 downto 0);
    
-    signal centroid_cursor_next: std_logic_vector(7 downto 0);      
-    signal config_cursor_next: std_logic_vector(4 downto 0);       
+    signal current_mask_next: std_logic_vector(7 downto 0);
+    signal output_mask_next: std_logic_vector(7 downto 0);      
         
                 
 begin
@@ -78,9 +87,11 @@ begin
                 pos_x <= pos_x_next;
                 pos_y <= pos_y_next;
                 min_distance <= min_distance_next;
+                current_distance <= current_distance_next;
                 mask <= mask_next;
-                centroid_cursor <= centroid_cursor_next;
+                current_mask <= current_mask_next;
                 config_cursor <= config_cursor_next;
+                output_mask <= output_mask_next;
             end if;
        end process;
        
@@ -92,86 +103,117 @@ begin
             pos_x_next <= pos_x;
             pos_y_next <= pos_y;
             min_distance_next <= min_distance;
+            current_distance_next <= current_distance;
             mask_next <= mask;
-            centroid_cursor_next <= centroid_cursor;
+            current_mask_next <= current_mask;
             config_cursor_next <= config_cursor;
+            output_mask_next <= output_mask;
             
             case state_cur is
                 when START =>
                     -- codice
                     if (i_start = '1') then
-                        current_x <= "00000000";
-                        current_y <= "00000000";
-                        pos_x <= "00000000";
-                        pos_y <= "00000000";
-                        min_distance <= "100000000";
-                        centroid_cursor <= "00000000";
-                        config_cursor <= "00000";
+                        current_x_next <= "00000000";
+                        current_y_next <= "00000000";
+                        pos_x_next <= "00000000";
+                        pos_y_next <= "00000000";
+                        min_distance_next <= "100000001";
+                        current_distance_next <= "000000000";
+                        current_mask_next <= "00000001";
+                        output_mask_next <= "00000000";
+                        config_cursor_next <= "00000001";
                                                 
                         o_done <= '0';
                         
-                        state_next <= RAM_READ;
+                        state_next <= MASK_ASK;
                     else
                         state_next <= START;
-                    end if;                    
-                when RAM_READ =>
-                    -- codice
-                    if (centroid_cursor = "00000000") then
-                        if (config_cursor = "00000") then       -- 0
-                            o_en <= '1';
-                            o_address <= "00000000";
-                            config_cursor <= "10001";
-                            state_next <= RAM_ACK;
-                        elsif (config_cursor = "10001") then    -- 17
-                            o_en <= '1';
-                            o_address <= "00010001";
-                            config_cursor <= "10010";
-                            state_next <= RAM_ACK;
-                        elsif (config_cursor = "10010") then    -- 18
-                            o_en <= '1';
-                            o_address <= "00010010";
-                            config_cursor <= "10011";           -- posizione non valida
-                            state_next <= RAM_ACK;
-                        end if;
-                    else
-                        -- calcolare l'indirizzo da leggere
-                        -- verificare la maschera
-                        -- se ok procedere
-                        -- se no skippare
-                        
                     end if;
+                when MASK_ASK =>
+                    -- codice
+                    o_en <= '1';
+                    o_address <= "0000000000000000";
+                    state_next <= POS_X_ASK;                
+                when POS_X_ASK =>
+                    -- codice
+                    mask_next <= i_data;
                     
-                when RAM_ACK =>
+                    o_address <= "0000000000010001";
+                    state_next <= POS_Y_ASK;
+                when POS_Y_ASK =>
                     -- codice
-                    if (centroid_cursor = "00000000") then
-                        if (config_cursor = "10001") then       -- leggo la maschera
-                            mask_next <= i_data;
-                            o_en <= '0';
-                            state_next <= RAM_READ;
-                        elsif (config_cursor = "10010") then    -- leggo la x
-                            pos_x_next <= i_data;
-                            o_en <= '0';
-                            state_next <= RAM_READ;
-                        elsif (config_cursor = "10011") then    -- leggo la y
-                            pos_y_next <= i_data;
-                            o_en <= '0';
-                            state_next <= RAM_READ;
-                            centroid_cursor <= "00000001";
-                        end if;
+                    pos_x_next <= i_data;
+                    
+                    o_address <= "0000000000010010";
+                    state_next <= POS_Y_ACK;
+                when POS_Y_ACK =>
+                    -- codice
+                    pos_y_next <= i_data;
+                    o_en <= '0';
+                    
+                    state_next <= CEN_X_ASK;
+                when CEN_X_ASK =>
+                    -- codice
+                    if (current_mask = "00000000") then
+                        state_next <= COMPLETED;
                     else
-                        -- ricordarsi di incrementare centroid_cursor se non è valido
-                    end if;
-                                                      
+                        if (unsigned(mask and current_mask) >= 1) then
+                            o_en <= '1';
+                            o_address <= "00000000"&config_cursor;
+                            config_cursor_next <= std_logic_vector(unsigned(config_cursor) + 1);
+                            state_next <= CEN_Y_ASK;
+                        else
+                            config_cursor_next <= std_logic_vector(unsigned(config_cursor) + 2);
+                            current_mask_next <= current_mask(6 downto 0) & '0';
+                            state_next <= CEN_X_ASK;
+                        end if;                        
+                    end if;                    
+                when CEN_Y_ASK =>
+                    -- codice
+                    current_x_next <= i_data;
+                    
+                    o_address <= "00000000"&config_cursor;
+                    
+                    config_cursor_next <= std_logic_vector(unsigned(config_cursor) + 1);
+                    
+                    state_next <= CEN_Y_ACK;   
+                when CEN_Y_ACK =>
+                    -- codice
+                    current_y_next <= i_data; 
+                    o_en <= '0';
+                    
+                    state_next <= DIST_CALC;                                            
                 when DIST_CALC =>
                     -- codice
-                when DIST_LOWER =>
+                    current_distance_next <= std_logic_vector(abs(signed('0'&current_x) - signed('0'&pos_x)) + abs(signed('0'&current_y) - signed('0'&pos_y)));
+                    
+                    state_next <= DIST_EVALUATE;
+                when DIST_EVALUATE =>
                     -- codice
-                when DIST_EQUAL =>
-                    -- codice
-                when DIST_HIGHER =>
-                    -- codice
+                    if (unsigned(current_distance) = unsigned(min_distance)) then
+                        output_mask_next <= output_mask or current_mask;
+                        current_mask_next <= current_mask(6 downto 0) & '0';
+                    else
+                        if (unsigned(current_distance) < unsigned(min_distance)) then
+                            output_mask_next <= current_mask;
+                            current_mask_next <= current_mask(6 downto 0) & '0';
+                            min_distance_next <= current_distance;
+                        end if;
+                    end if;
+                    state_next <= CEN_X_ASK;
+
                 when COMPLETED =>
                     -- codice
+                    if (current_mask = "00000000") then
+                        o_en <= '1';
+                        o_we <= '1';
+                        o_address <= "0000000000010011";
+                        o_data <= output_mask;
+                        current_mask <= "00000001";
+                        state_next <= COMPLETED;
+                   else
+                        o_done <= '1';
+                   end if;
             end case;
         end process;
 
